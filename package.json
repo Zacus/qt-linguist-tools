@@ -1,0 +1,84 @@
+{
+  "name": "qt-linguist",
+  "displayName": "Qt Linguist Tools",
+  "description": "在VS Code中快速打开Qt Linguist翻译文件",
+  "version": "1.0.0",
+  "publisher": "user",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yourusername/qt-linguist-tools"
+  },
+  "author": {
+    "name": "Your Name"
+  },
+  "license": "MIT",
+  "keywords": [
+    "qt",
+    "linguist",
+    "translation",
+    "i18n"
+  ],
+  "engines": {
+    "vscode": "^1.58.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "configuration": {
+      "title": "Qt Linguist",
+      "properties": {
+        "qt-linguist.qtPath": {
+          "type": "string",
+          "default": "/opt/homebrew/opt/qt",
+          "description": "Qt 安装路径，例如: /opt/homebrew/opt/qt 或 /usr/local/opt/qt"
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "qt-linguist.openInLinguist",
+        "title": "在 Qt Linguist 中打开",
+        "category": "Qt Linguist"
+      }
+    ],
+    "menus": {
+      "explorer/context": [
+        {
+          "when": "resourceExtname == .ts",
+          "command": "qt-linguist.openInLinguist",
+          "group": "navigation@1"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "qt-linguist.openInLinguist",
+        "key": "cmd+alt+l",
+        "mac": "cmd+alt+l",
+        "when": "resourceExtname == .ts"
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "pretest": "npm run compile && npm run lint",
+    "lint": "eslint src",
+    "test": "vscode-test"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.58.0",
+    "@types/node": "^18.0.0",
+    "@typescript-eslint/eslint-plugin": "^7.0.0",
+    "@typescript-eslint/parser": "^7.0.0",
+    "eslint": "^8.57.0",
+    "@vscode/test-cli": "^0.0.4",
+    "@vscode/test-electron": "^2.3.9"
+  }
+}
