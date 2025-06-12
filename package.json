@@ -1,41 +1,74 @@
 {
   "name": "qt-linguist",
   "displayName": "Qt Linguist Tools",
-  "description": "在VS Code中快速打开Qt Linguist翻译文件",
-  "version": "1.0.0",
-  "publisher": "user",
+  "description": "跨平台Qt Linguist集成工具，支持翻译文件的打开、更新和编译",
+  "version": "1.1.0",
+  "publisher": "zealoustarry",
   "repository": {
     "type": "git",
-    "url": "https://github.com/yourusername/qt-linguist-tools"
+    "url": "https://github.com/Zacus/qt-linguist-tools"
   },
   "author": {
-    "name": "Your Name"
+    "name": "Zacus",
+    "email": "zhaoshuais@icloud.com"
   },
   "license": "MIT",
   "keywords": [
     "qt",
     "linguist",
     "translation",
-    "i18n"
+    "i18n",
+    "lrelease",
+    "lupdate",
+    "cross-platform"
   ],
   "engines": {
     "vscode": "^1.58.0"
   },
   "categories": [
-    "Other"
+    "Other",
+    "Extension Packs"
   ],
   "activationEvents": [
-    "onStartupFinished"
+    "onStartupFinished",
+    "onLanguage:cpp",
+    "workspaceContains:**/*.pro",
+    "workspaceContains:**/*.ts"
   ],
   "main": "./out/extension.js",
+  "icon": "./images/qtIcon.png",
+  "galleryBanner": {
+    "color": "#1e1e1e",
+    "theme": "dark"
+  },
   "contributes": {
     "configuration": {
-      "title": "Qt Linguist",
+      "title": "Qt Linguist Tools",
       "properties": {
         "qt-linguist.qtPath": {
           "type": "string",
-          "default": "/opt/homebrew/opt/qt",
-          "description": "Qt 安装路径，例如: /opt/homebrew/opt/qt 或 /usr/local/opt/qt"
+          "default": "",
+          "description": "Qt 安装路径（如果为空，将自动检测）",
+          "examples": [
+            "/opt/homebrew/opt/qt",
+            "C:\\Qt\\6.5.0\\msvc2019_64",
+            "/usr/local/qt"
+          ]
+        },
+        "qt-linguist.autoDetectQt": {
+          "type": "boolean",
+          "default": true,
+          "description": "自动检测 Qt 工具路径"
+        },
+        "qt-linguist.showStatusBar": {
+          "type": "boolean",
+          "default": true,
+          "description": "在状态栏显示 Qt Linguist 按钮"
+        },
+        "qt-linguist.showNotifications": {
+          "type": "boolean",
+          "default": true,
+          "description": "显示操作完成通知"
         }
       }
     },
@@ -43,24 +76,116 @@
       {
         "command": "qt-linguist.openInLinguist",
         "title": "在 Qt Linguist 中打开",
-        "category": "Qt Linguist"
+        "category": "Qt Linguist",
+        "icon": "$(globe)"
+      },
+      {
+        "command": "qt-linguist.generateQm",
+        "title": "编译翻译文件 (lrelease)",
+        "category": "Qt Linguist",
+        "icon": "$(package)"
+      },
+      {
+        "command": "qt-linguist.updateTranslation",
+        "title": "更新翻译文件 (lupdate)",
+        "category": "Qt Linguist",
+        "icon": "$(sync)"
+      },
+      {
+        "command": "qt-linguist.compileAll",
+        "title": "批量编译所有翻译文件",
+        "category": "Qt Linguist",
+        "icon": "$(checklist)"
+      },
+      {
+        "command": "qt-linguist.showMenu",
+        "title": "Qt Linguist 工具菜单",
+        "category": "Qt Linguist",
+        "icon": "$(menu)"
       }
     ],
     "menus": {
       "explorer/context": [
         {
-          "when": "resourceExtname == .ts",
           "command": "qt-linguist.openInLinguist",
-          "group": "navigation@1"
+          "when": "resourceExtname == .ts",
+          "group": "qt-linguist@1"
+        },
+        {
+          "command": "qt-linguist.generateQm",
+          "when": "resourceExtname == .ts",
+          "group": "qt-linguist@2"
+        },
+        {
+          "command": "qt-linguist.updateTranslation",
+          "when": "resourceExtname == .ts || resourceExtname == .pro",
+          "group": "qt-linguist@3"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "qt-linguist.openInLinguist",
+          "when": "resourceExtname == .ts",
+          "group": "qt-linguist@1"
+        },
+        {
+          "command": "qt-linguist.generateQm",
+          "when": "resourceExtname == .ts",
+          "group": "qt-linguist@2"
+        },
+        {
+          "command": "qt-linguist.updateTranslation",
+          "when": "resourceExtname == .ts || resourceExtname == .pro",
+          "group": "qt-linguist@3"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "qt-linguist.openInLinguist",
+          "when": "resourceExtname == .ts",
+          "group": "navigation"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "qt-linguist.openInLinguist",
+          "when": "resourceExtname == .ts"
+        },
+        {
+          "command": "qt-linguist.generateQm",
+          "when": "resourceExtname == .ts"
+        },
+        {
+          "command": "qt-linguist.updateTranslation"
+        },
+        {
+          "command": "qt-linguist.compileAll"
         }
       ]
     },
     "keybindings": [
       {
         "command": "qt-linguist.openInLinguist",
-        "key": "cmd+alt+l",
-        "mac": "cmd+alt+l",
+        "key": "ctrl+shift+l",
+        "mac": "cmd+shift+l",
         "when": "resourceExtname == .ts"
+      },
+      {
+        "command": "qt-linguist.generateQm",
+        "key": "ctrl+shift+r",
+        "mac": "cmd+shift+r",
+        "when": "resourceExtname == .ts"
+      },
+      {
+        "command": "qt-linguist.updateTranslation",
+        "key": "ctrl+shift+u",
+        "mac": "cmd+shift+u",
+        "when": "resourceExtname == .ts || resourceExtname == .pro"
+      },
+      {
+        "command": "qt-linguist.showMenu",
+        "key": "ctrl+shift+q",
+        "mac": "cmd+shift+q"
       }
     ]
   },
@@ -69,8 +194,12 @@
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
     "pretest": "npm run compile && npm run lint",
-    "lint": "eslint src",
-    "test": "vscode-test"
+    "lint": "eslint src --ext ts",
+    "test": "vscode-test",
+    "package": "vsce package",
+    "publish": "vsce publish",
+    "clean": "rimraf out",
+    "build": "npm run clean && npm run compile"
   },
   "devDependencies": {
     "@types/vscode": "^1.58.0",
@@ -79,6 +208,9 @@
     "@typescript-eslint/parser": "^7.0.0",
     "eslint": "^8.57.0",
     "@vscode/test-cli": "^0.0.4",
-    "@vscode/test-electron": "^2.3.9"
+    "@vscode/test-electron": "^2.3.9",
+    "@vscode/vsce": "^2.19.0",
+    "rimraf": "^5.0.0",
+    "typescript": "^5.0.0"
   }
 }
