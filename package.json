@@ -2,7 +2,7 @@
   "name": "qt-linguist",
   "displayName": "Qt Linguist Tools",
   "description": "跨平台Qt Linguist集成工具，支持翻译文件的打开、更新和编译",
-  "version": "1.1.1",
+  "version": "1.1.4",
   "publisher": "zealoustarry",
   "repository": {
     "type": "git",
@@ -20,7 +20,8 @@
     "i18n",
     "lrelease",
     "lupdate",
-    "cross-platform"
+    "cross-platform",
+    "batch-update"
   ],
   "engines": {
     "vscode": "^1.58.0"
@@ -69,6 +70,17 @@
           "type": "boolean",
           "default": true,
           "description": "显示操作完成通知"
+        },
+        "qt-linguist.batchUpdateStrategy": {
+          "type": "string",
+          "enum": ["byDirectory", "individual", "fromPro"],
+          "enumDescriptions": [
+            "按目录分组更新 - 每个目录执行一次 lupdate",
+            "逐个文件更新 - 为每个 .ts 文件单独执行 lupdate",
+            "从 .pro 文件更新 - 查找 .pro 文件并使用它们来更新翻译文件"
+          ],
+          "default": "byDirectory",
+          "description": "批量更新翻译文件的默认策略"
         }
       }
     },
@@ -90,6 +102,12 @@
         "title": "更新翻译文件 (lupdate)",
         "category": "Qt Linguist",
         "icon": "$(sync)"
+      },
+      {
+        "command": "qt-linguist.updateAll",
+        "title": "批量更新所有翻译文件",
+        "category": "Qt Linguist",
+        "icon": "$(sync-ignored)"
       },
       {
         "command": "qt-linguist.compileAll",
@@ -120,6 +138,11 @@
           "command": "qt-linguist.updateTranslation",
           "when": "resourceExtname == .ts || resourceExtname == .pro",
           "group": "qt-linguist@3"
+        },
+        {
+          "command": "qt-linguist.updateAll",
+          "when": "explorerResourceIsFolder",
+          "group": "qt-linguist@4"
         }
       ],
       "editor/context": [
@@ -159,6 +182,9 @@
           "command": "qt-linguist.updateTranslation"
         },
         {
+          "command": "qt-linguist.updateAll"
+        },
+        {
           "command": "qt-linguist.compileAll"
         }
       ]
@@ -181,6 +207,11 @@
         "key": "ctrl+shift+u",
         "mac": "cmd+shift+u",
         "when": "resourceExtname == .ts || resourceExtname == .pro"
+      },
+      {
+        "command": "qt-linguist.updateAll",
+        "key": "ctrl+shift+alt+u",
+        "mac": "cmd+shift+alt+u"
       },
       {
         "command": "qt-linguist.showMenu",

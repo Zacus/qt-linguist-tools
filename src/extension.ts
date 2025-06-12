@@ -2,7 +2,7 @@
  * @Author: zs
  * @Date: 2025-06-11 18:42:54
  * @LastEditors: zs
- * @LastEditTime: 2025-06-12 16:21:11
+ * @LastEditTime: 2025-06-12 17:03:43
  * @FilePath: /qt-linguist-tools/qt-linguist/src/extension.ts
  * @Description: 跨平台Qt Linguist VS Code扩展
  * 
@@ -199,12 +199,36 @@ export function activate(context: vscode.ExtensionContext) {
 		return proFiles;
 	}
 	
-	// 注册命令：在Qt Linguist中打开
+	// 用于跟踪已打开的文件
+	const openedFiles = new Set<string>();
+
+	// 修复后的打开Linguist命令 - 使用简单跟踪方式
 	let openLinguistCommand = vscode.commands.registerCommand('qt-linguist.openInLinguist', async (uri: vscode.Uri) => {
 		try {
 			if (!uri.fsPath.endsWith('.ts')) {
 				vscode.window.showErrorMessage('只能打开 .ts 翻译文件');
 				return;
+			}
+			
+			const filePath = path.resolve(uri.fsPath);
+			
+			// 检查是否已经在跟踪列表中
+			if (openedFiles.has(filePath)) {
+				const choice = await vscode.window.showWarningMessage(
+					`文件 "${path.basename(filePath)}" 可能已经在 Qt Linguist 中打开。是否要重新打开？`,
+					'重新打开',
+					'激活现有窗口',
+					'取消'
+				);
+				
+				if (choice === '取消') {
+					return;
+				} else if (choice === '激活现有窗口') {
+					// 尝试激活现有的linguist窗口
+					await activateLinguistWindow();
+					return;
+				}
+				// 如果选择"重新打开"，继续执行下面的代码
 			}
 			
 			const qtPaths = await getQtPaths();
@@ -213,48 +237,54 @@ export function activate(context: vscode.ExtensionContext) {
 				throw new Error('未找到 Qt Linguist，请检查 Qt 安装或配置路径');
 			}
 			
-			// 检查是否已经有linguist进程在运行此文件
-			const isAlreadyOpen = await checkIfLinguistIsOpen(uri.fsPath);
-			if (isAlreadyOpen) {
-				vscode.window.showInformationMessage('该文件已在 Qt Linguist 中打开');
-				return;
-			}
-			
-			// 更严格的命令构建和执行
+			// 构建命令
 			let command: string;
 			const platform = os.platform();
 			
 			if (platform === 'darwin') {
-				// macOS: 使用 open 命令或直接执行
 				if (qtPaths.linguist.includes('.app/')) {
-					// App包格式，使用open命令
-					command = `open -n "${qtPaths.linguist.replace('/Contents/MacOS/linguist', '')}" --args "${uri.fsPath}"`;
+					// App包格式，使用open命令，但不使用-n参数避免多实例
+					const appPath = qtPaths.linguist.replace('/Contents/MacOS/linguist', '');
+					command = `open "${appPath}" --args "${filePath}"`;
 				} else {
 					// 命令行工具
-					command = `"${qtPaths.linguist}" "${uri.fsPath}" &`;
+					command = `"${qtPaths.linguist}" "${filePath}"`;
 				}
 			} else if (platform === 'win32') {
-				// Windows: 添加 /wait 可能有助于避免多实例
-				command = `start "" "${qtPaths.linguist}" "${uri.fsPath}"`;
+				command = `"${qtPaths.linguist}" "${filePath}"`;
 			} else {
-				// Linux: 后台运行
-				command = `"${qtPaths.linguist}" "${uri.fsPath}" &`;
+				// Linux
+				command = `"${qtPaths.linguist}" "${filePath}"`;
 			}
 			
-			console.log('执行命令:', command); // 调试用
+			console.log('执行命令:', command);
 			
-			await execAsync(command, { 
-				timeout: 10000,  // 10秒超时
-				windowsHide: true  // Windows上隐藏命令窗口
+			// 执行命令
+			const childProcess = exec(command, (error) => {
+				if (error) {
+					console.error('linguist进程错误:', error);
+					openedFiles.delete(filePath); // 如果启动失败，从跟踪列表中移除
+				}
 			});
 			
-			vscode.window.showInformationMessage('Qt Linguist 已打开');
+			// 添加到跟踪列表
+			openedFiles.add(filePath);
+			
+			// 监听进程退出，从跟踪列表中移除
+			childProcess.on('exit', () => {
+				openedFiles.delete(filePath);
+				console.log(`Qt Linguist 进程已退出: ${path.basename(filePath)}`);
+			});
+			
+			// 给进程一些时间启动
+			await new Promise(resolve => setTimeout(resolve, 1000));
+			
+			vscode.window.showInformationMessage(`Qt Linguist 打开成功: ${path.basename(filePath)}`);
 			
 		} catch (error) {
-			console.error('打开Qt Linguist错误:', error); // 调试用
+			console.error('打开Qt Linguist错误:', error);
 			vscode.window.showErrorMessage(`无法打开 Qt Linguist: ${error}`);
 			
-			// 提示用户设置Qt路径
 			const setPath = '设置 Qt 路径';
 			vscode.window.showErrorMessage('Qt 路径可能不正确，请检查设置', setPath)
 				.then(selection => {
@@ -265,23 +295,62 @@ export function activate(context: vscode.ExtensionContext) {
 		}
 	});
 
-	// 新增：检查linguist是否已经打开了指定文件
+
+	// 尝试激活现有的linguist窗口
+	async function activateLinguistWindow(): Promise<void> {
+		try {
+			const platform = os.platform();
+			
+			if (platform === 'darwin') {
+				// macOS: 激活linguist应用
+				await execAsync(`osascript -e 'tell application "linguist" to activate' 2>/dev/null || osascript -e 'tell application "Qt Linguist" to activate' 2>/dev/null || true`);
+			} else if (platform === 'win32') {
+				// Windows: 尝试将linguist窗口带到前台
+				await execAsync(`powershell -Command "Add-Type -TypeDefinition 'using System; using System.Diagnostics; using System.Runtime.InteropServices; public class Win32 { [DllImport(\\"user32.dll\\")] public static extern bool SetForegroundWindow(IntPtr hWnd); [DllImport(\\"user32.dll\\")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow); }'; $p = Get-Process -Name linguist -ErrorAction SilentlyContinue; if($p) { [Win32]::ShowWindow($p.MainWindowHandle, 9); [Win32]::SetForegroundWindow($p.MainWindowHandle) }"`);
+			} else {
+				// Linux: 尝试激活窗口
+				await execAsync(`wmctrl -a linguist 2>/dev/null || true`);
+			}
+			
+			vscode.window.showInformationMessage('已尝试激活现有的 Qt Linguist 窗口');
+		} catch (error) {
+			console.log('激活linguist窗口失败:', error);
+			vscode.window.showInformationMessage('无法激活现有窗口，请手动切换到 Qt Linguist');
+		}
+	}
+
+	// 检查linguist是否已经打开了指定文件
 	async function checkIfLinguistIsOpen(filePath: string): Promise<boolean> {
 		try {
 			const platform = os.platform();
-			let command: string;
+			const fileName = path.basename(filePath);
+			const fullPath = path.resolve(filePath);
 			
 			if (platform === 'darwin') {
-				command = `ps aux | grep linguist | grep "${path.basename(filePath)}"`;
+				// macOS: 检查进程参数
+				const { stdout } = await execAsync(`ps -eo pid,args | grep linguist`);
+				const processes = stdout.split('\n').filter(line => 
+					line.includes('linguist') && 
+					!line.includes('grep') && 
+					(line.includes(fileName) || line.includes(fullPath))
+				);
+				return processes.length > 0;
 			} else if (platform === 'win32') {
-				command = `tasklist /FI "IMAGENAME eq linguist.exe" /FO CSV | findstr linguist`;
+				// Windows: 使用wmic检查进程命令行
+				const { stdout } = await execAsync(`wmic process where "name='linguist.exe'" get ProcessId,CommandLine /format:csv`);
+				return stdout.includes(fileName) || stdout.includes(fullPath.replace(/\\/g, '\\\\'));
 			} else {
-				command = `ps aux | grep linguist | grep "${path.basename(filePath)}"`;
+				// Linux: 检查进程参数
+				const { stdout } = await execAsync(`ps -eo pid,args | grep linguist`);
+				const processes = stdout.split('\n').filter(line => 
+					line.includes('linguist') && 
+					!line.includes('grep') && 
+					(line.includes(fileName) || line.includes(fullPath))
+				);
+				return processes.length > 0;
 			}
-			
-			const { stdout } = await execAsync(command);
-			return stdout.trim().length > 0 && !stdout.includes('grep');
-		} catch {
+		} catch (error) {
+			console.log('检查linguist进程时出错:', error);
 			return false; // 如果检查失败，假设没有打开
 		}
 	}
@@ -464,6 +533,242 @@ export function activate(context: vscode.ExtensionContext) {
 		}
 	});
 
+	// 注册命令：批量更新工作空间中的所有翻译文件
+	let updateAllCommand = vscode.commands.registerCommand('qt-linguist.updateAll', async () => {
+		try {
+			const qtPaths = await getQtPaths();
+			
+			if (!qtPaths.lupdate) {
+				throw new Error('未找到 lupdate 工具，请检查 Qt 安装');
+			}
+			
+			// 查找所有.ts文件
+			const tsFiles = await vscode.workspace.findFiles('**/*.ts', '**/node_modules/**');
+			
+			if (tsFiles.length === 0) {
+				vscode.window.showInformationMessage('未找到任何 .ts 翻译文件');
+				return;
+			}
+			
+			// 询问用户更新策略
+			const strategy = await vscode.window.showQuickPick([
+				{
+					label: '$(file-directory) 按目录分组更新',
+					description: '每个目录执行一次 lupdate，包含该目录下的所有 .ts 文件',
+					value: 'byDirectory'
+				},
+				{
+					label: '$(file) 逐个文件更新',
+					description: '为每个 .ts 文件单独执行 lupdate',
+					value: 'individual'
+				},
+				{
+					label: '$(project) 从 .pro 文件更新',
+					description: '查找 .pro 文件并使用它们来更新翻译文件',
+					value: 'fromPro'
+				}
+			], {
+				placeHolder: '选择批量更新策略'
+			});
+			
+			if (!strategy) return;
+			
+			// 显示进度条
+			await vscode.window.withProgress({
+				location: vscode.ProgressLocation.Notification,
+				title: "批量更新翻译文件",
+				cancellable: true
+			}, async (progress, token) => {
+				let updated = 0;
+				let failed = 0;
+				const results: string[] = [];
+				
+				if (strategy.value === 'fromPro') {
+					// 从.pro文件更新
+					const proFiles = await findProFiles();
+					
+					if (proFiles.length === 0) {
+						throw new Error('未找到 .pro 文件，请选择其他更新策略');
+					}
+					
+					const total = proFiles.length;
+					
+					for (let i = 0; i < proFiles.length; i++) {
+						if (token.isCancellationRequested) {
+							break;
+						}
+						
+						const proFile = proFiles[i];
+						progress.report({ 
+							increment: (i / total) * 100, 
+							message: `更新 ${path.basename(proFile.fsPath)} (${i + 1}/${total})` 
+						});
+						
+						try {
+							const command = os.platform() === 'win32' 
+								? `"${qtPaths.lupdate}" "${proFile.fsPath}"` 
+								: `'${qtPaths.lupdate}' '${proFile.fsPath}'`;
+							
+							const { stdout, stderr } = await execAsync(command);
+							updated++;
+							
+							// 收集输出信息
+							if (stdout) {
+								const lines = stdout.split('\n').filter(line => line.trim());
+								if (lines.length > 0) {
+									results.push(`${path.basename(proFile.fsPath)}: ${lines[lines.length - 1]}`);
+								}
+							}
+							
+						} catch (error) {
+							failed++;
+							results.push(`${path.basename(proFile.fsPath)}: 更新失败 - ${error}`);
+							console.error(`更新 ${proFile.fsPath} 失败:`, error);
+						}
+					}
+					
+				} else if (strategy.value === 'byDirectory') {
+					// 按目录分组更新
+					const dirGroups = new Map<string, vscode.Uri[]>();
+					
+					// 按目录分组
+					tsFiles.forEach(file => {
+						const dir = path.dirname(file.fsPath);
+						if (!dirGroups.has(dir)) {
+							dirGroups.set(dir, []);
+						}
+						dirGroups.get(dir)!.push(file);
+					});
+					
+					const directories = Array.from(dirGroups.keys());
+					const total = directories.length;
+					
+					for (let i = 0; i < directories.length; i++) {
+						if (token.isCancellationRequested) {
+							break;
+						}
+						
+						const dir = directories[i];
+						const files = dirGroups.get(dir)!;
+						
+						progress.report({ 
+							increment: (i / total) * 100, 
+							message: `更新目录 ${path.basename(dir)} (${files.length} 个文件) (${i + 1}/${total})` 
+						});
+						
+						try {
+							// 构建包含所有.ts文件的命令
+							const tsFilePaths = files.map(f => `"${f.fsPath}"`).join(' ');
+							const command = os.platform() === 'win32' 
+								? `"${qtPaths.lupdate}" "${dir}" -ts ${tsFilePaths}` 
+								: `'${qtPaths.lupdate}' '${dir}' -ts ${tsFilePaths}`;
+							
+							const { stdout, stderr } = await execAsync(command);
+							updated += files.length;
+							
+							// 收集输出信息
+							if (stdout) {
+								const lines = stdout.split('\n').filter(line => line.trim());
+								if (lines.length > 0) {
+									results.push(`${path.basename(dir)} (${files.length}个文件): ${lines[lines.length - 1]}`);
+								}
+							}
+							
+						} catch (error) {
+							failed += files.length;
+							results.push(`${path.basename(dir)}: 更新失败 - ${error}`);
+							console.error(`更新目录 ${dir} 失败:`, error);
+						}
+					}
+					
+				} else {
+					// 逐个文件更新
+					const total = tsFiles.length;
+					
+					for (let i = 0; i < tsFiles.length; i++) {
+						if (token.isCancellationRequested) {
+							break;
+						}
+						
+						const tsFile = tsFiles[i];
+						progress.report({ 
+							increment: (i / total) * 100, 
+							message: `更新 ${path.basename(tsFile.fsPath)} (${i + 1}/${total})` 
+						});
+						
+						try {
+							const sourceDir = path.dirname(tsFile.fsPath);
+							const command = os.platform() === 'win32' 
+								? `"${qtPaths.lupdate}" "${sourceDir}" -ts "${tsFile.fsPath}"` 
+								: `'${qtPaths.lupdate}' '${sourceDir}' -ts '${tsFile.fsPath}'`;
+							
+							const { stdout, stderr } = await execAsync(command);
+							updated++;
+							
+							// 收集输出信息
+							if (stdout) {
+								const lines = stdout.split('\n').filter(line => line.trim());
+								if (lines.length > 0) {
+									results.push(`${path.basename(tsFile.fsPath)}: ${lines[lines.length - 1]}`);
+								}
+							}
+							
+						} catch (error) {
+							failed++;
+							results.push(`${path.basename(tsFile.fsPath)}: 更新失败 - ${error}`);
+							console.error(`更新 ${tsFile.fsPath} 失败:`, error);
+						}
+					}
+				}
+				
+				progress.report({ increment: 100, message: "完成" });
+				
+				// 显示结果
+				const message = token.isCancellationRequested 
+					? `批量更新已取消: 成功 ${updated} 个，失败 ${failed} 个`
+					: `批量更新完成: 成功 ${updated} 个，失败 ${failed} 个`;
+				
+				if (failed > 0) {
+					vscode.window.showWarningMessage(message, '查看详情').then(selection => {
+						if (selection === '查看详情') {
+							showUpdateResults(results);
+						}
+					});
+				} else {
+					vscode.window.showInformationMessage(message, '查看详情').then(selection => {
+						if (selection === '查看详情') {
+							showUpdateResults(results);
+						}
+					});
+				}
+			});
+			
+		} catch (error) {
+			vscode.window.showErrorMessage(`批量更新翻译文件失败: ${error}`);
+		}
+	});
+
+	// 显示更新结果的辅助函数
+	async function showUpdateResults(results: string[]): Promise<void> {
+		if (results.length === 0) {
+			vscode.window.showInformationMessage('没有更新结果信息');
+			return;
+		}
+		
+		// 创建一个新的文档来显示结果
+		const doc = await vscode.workspace.openTextDocument({
+			content: `Qt Linguist 批量更新结果\n${'='.repeat(40)}\n\n${results.join('\n\n')}`,
+			language: 'plaintext'
+		});
+		
+		await vscode.window.showTextDocument(doc);
+	}
+
+
+
+
+
+
 	// 添加状态栏按钮
 	const linguistButton = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
 	linguistButton.text = "$(globe) Qt Linguist";
@@ -471,7 +776,7 @@ export function activate(context: vscode.ExtensionContext) {
 	linguistButton.command = 'qt-linguist.showMenu';
 	linguistButton.show();
 
-	// 注册菜单命令
+	// 更新状态栏菜单
 	let showMenuCommand = vscode.commands.registerCommand('qt-linguist.showMenu', async () => {
 		const items = [
 			{
@@ -483,6 +788,11 @@ export function activate(context: vscode.ExtensionContext) {
 				label: '$(sync) 更新翻译文件',
 				description: '使用 lupdate 更新翻译文件',
 				command: 'qt-linguist.updateTranslation'
+			},
+			{
+				label: '$(sync-ignored) 批量更新所有翻译文件',
+				description: '批量更新工作空间中的所有 .ts 文件',
+				command: 'qt-linguist.updateAll'
 			},
 			{
 				label: '$(package) 编译翻译文件',
@@ -502,7 +812,9 @@ export function activate(context: vscode.ExtensionContext) {
 
 		if (selected) {
 			const activeEditor = vscode.window.activeTextEditor;
-			if (activeEditor && selected.command !== 'qt-linguist.compileAll' && selected.command !== 'qt-linguist.updateTranslation') {
+			if (activeEditor && selected.command !== 'qt-linguist.compileAll' && 
+				selected.command !== 'qt-linguist.updateTranslation' && 
+				selected.command !== 'qt-linguist.updateAll') {
 				vscode.commands.executeCommand(selected.command, activeEditor.document.uri);
 			} else {
 				vscode.commands.executeCommand(selected.command);
@@ -510,11 +822,13 @@ export function activate(context: vscode.ExtensionContext) {
 		}
 	});
 
+	// 在 context.subscriptions.push() 中添加新命令
 	context.subscriptions.push(
 		openLinguistCommand,
 		generateQmCommand,
 		updateTranslationCommand,
 		compileAllCommand,
+		updateAllCommand, // 新增这一行
 		showMenuCommand,
 		linguistButton
 	);
