@@ -131,18 +131,13 @@
         },
         {
           "command": "qt-linguist.generateQm",
-          "when": "resourceExtname == .ts",
+          "when": "resourceExtname == .ts || explorerResourceIsFolder",
           "group": "qt-linguist@2"
         },
         {
           "command": "qt-linguist.updateTranslation",
-          "when": "resourceExtname == .ts || resourceExtname == .pro",
+          "when": "resourceExtname == .ts || resourceExtname == .pro || explorerResourceIsFolder",
           "group": "qt-linguist@3"
-        },
-        {
-          "command": "qt-linguist.updateAll",
-          "when": "explorerResourceIsFolder",
-          "group": "qt-linguist@4"
         }
       ],
       "editor/context": [

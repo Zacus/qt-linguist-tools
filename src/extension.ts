@@ -2,7 +2,7 @@
  * @Author: zs
  * @Date: 2025-06-11 18:42:54
  * @LastEditors: zs
- * @LastEditTime: 2025-06-12 17:03:43
+ * @LastEditTime: 2025-06-12 20:26:24
  * @FilePath: /qt-linguist-tools/qt-linguist/src/extension.ts
  * @Description: 跨平台Qt Linguist VS Code扩展
  * 
@@ -26,7 +26,7 @@ interface QtPaths {
 export function activate(context: vscode.ExtensionContext) {
 
 	// 获取Qt工具路径
-// 获取Qt工具路径 - 修复版本
+	// 获取Qt工具路径 - 修复版本
 	async function getQtPaths(): Promise<QtPaths> {
 		const config = vscode.workspace.getConfiguration('qt-linguist');
 		const customQtPath = config.get('qtPath', '');
@@ -355,11 +355,59 @@ export function activate(context: vscode.ExtensionContext) {
 		}
 	}
 
-	// 注册命令：编译翻译文件（lrelease）
-	let generateQmCommand = vscode.commands.registerCommand('qt-linguist.generateQm', async (uri: vscode.Uri) => {
+////////////////////////////////////////////////////////////////////////////////////////
+	// 获取选中的翻译文件（支持多选和文件夹）
+	async function getSelectedTranslationFiles(uri?: vscode.Uri, uris?: vscode.Uri[]): Promise<vscode.Uri[]> {
+		const translationFiles: vscode.Uri[] = [];
+		
+		// 如果传入了多个URI（多选情况）
+		if (uris && uris.length > 0) {
+			for (const selectedUri of uris) {
+				const stat = await vscode.workspace.fs.stat(selectedUri);
+				
+				if (stat.type === vscode.FileType.Directory) {
+					// 如果是文件夹，查找其中的.ts文件
+					const tsFiles = await vscode.workspace.findFiles(
+						new vscode.RelativePattern(selectedUri, '**/*.ts'),
+						new vscode.RelativePattern(selectedUri, '**/node_modules/**')
+					);
+					translationFiles.push(...tsFiles);
+				} else if (selectedUri.fsPath.endsWith('.ts')) {
+					// 如果是.ts文件，直接添加
+					translationFiles.push(selectedUri);
+				}
+			}
+		} else if (uri) {
+			// 单个URI的情况
+			const stat = await vscode.workspace.fs.stat(uri);
+			
+			if (stat.type === vscode.FileType.Directory) {
+				// 如果是文件夹，查找其中的.ts文件
+				const tsFiles = await vscode.workspace.findFiles(
+					new vscode.RelativePattern(uri, '**/*.ts'),
+					new vscode.RelativePattern(uri, '**/node_modules/**')
+				);
+				translationFiles.push(...tsFiles);
+			} else if (uri.fsPath.endsWith('.ts')) {
+				// 如果是.ts文件，直接添加
+				translationFiles.push(uri);
+			}
+		}
+		
+		// 去重
+		const uniqueFiles = Array.from(new Set(translationFiles.map(f => f.fsPath)))
+			.map(path => vscode.Uri.file(path));
+		
+		return uniqueFiles;
+	}
+
+	// 修改后的编译翻译文件命令 - 支持多选
+	let generateQmCommand = vscode.commands.registerCommand('qt-linguist.generateQm', async (uri: vscode.Uri, uris?: vscode.Uri[]) => {
 		try {
-			if (!uri.fsPath.endsWith('.ts')) {
-				vscode.window.showErrorMessage('只能处理 .ts 翻译文件');
+			const selectedFiles = await getSelectedTranslationFiles(uri, uris);
+			
+			if (selectedFiles.length === 0) {
+				vscode.window.showErrorMessage('请选择 .ts 翻译文件或包含翻译文件的文件夹');
 				return;
 			}
 			
@@ -373,24 +421,61 @@ export function activate(context: vscode.ExtensionContext) {
 			await vscode.window.withProgress({
 				location: vscode.ProgressLocation.Notification,
 				title: "编译翻译文件",
-				cancellable: false
-			}, async (progress) => {
-				progress.report({ increment: 0, message: "正在编译..." });
+				cancellable: true
+			}, async (progress, token) => {
+				let compiled = 0;
+				let failed = 0;
+				const total = selectedFiles.length;
+				const results: string[] = [];
 				
-				const command = os.platform() === 'win32' 
-					? `"${qtPaths.lrelease}" "${uri.fsPath}"` 
-					: `'${qtPaths.lrelease}' '${uri.fsPath}'`;
-				
-				const { stdout, stderr } = await execAsync(command);
+				for (let i = 0; i < selectedFiles.length; i++) {
+					if (token.isCancellationRequested) {
+						break;
+					}
+					
+					const file = selectedFiles[i];
+					progress.report({ 
+						increment: (i / total) * 100, 
+						message: `编译 ${path.basename(file.fsPath)} (${i + 1}/${total})` 
+					});
+					
+					try {
+						const command = os.platform() === 'win32' 
+							? `"${qtPaths.lrelease}" "${file.fsPath}"` 
+							: `'${qtPaths.lrelease}' '${file.fsPath}'`;
+						
+						const { stdout, stderr } = await execAsync(command);
+						
+						if (stderr && !stderr.includes('Warning')) {
+							throw new Error(stderr);
+						}
+						
+						compiled++;
+						const qmFile = file.fsPath.replace('.ts', '.qm');
+						results.push(`✓ ${path.basename(qmFile)}`);
+						
+					} catch (error) {
+						failed++;
+						results.push(`✗ ${path.basename(file.fsPath)}: ${error}`);
+						console.error(`编译 ${file.fsPath} 失败:`, error);
+					}
+				}
 				
 				progress.report({ increment: 100, message: "完成" });
 				
-				if (stderr && !stderr.includes('Warning')) {
-					throw new Error(stderr);
-				}
+				const message = token.isCancellationRequested 
+					? `编译已取消: 成功 ${compiled} 个，失败 ${failed} 个`
+					: `编译完成: 成功 ${compiled} 个，失败 ${failed} 个`;
 				
-				const qmFile = uri.fsPath.replace('.ts', '.qm');
-				vscode.window.showInformationMessage(`翻译文件编译完成: ${path.basename(qmFile)}`);
+				if (failed > 0) {
+					vscode.window.showWarningMessage(message, '查看详情').then(selection => {
+						if (selection === '查看详情') {
+							showCompileResults(results);
+						}
+					});
+				} else {
+					vscode.window.showInformationMessage(message);
+				}
 			});
 			
 		} catch (error) {
@@ -398,88 +483,228 @@ export function activate(context: vscode.ExtensionContext) {
 		}
 	});
 
+	// 显示编译结果的辅助函数
+	async function showCompileResults(results: string[]): Promise<void> {
+		if (results.length === 0) {
+			vscode.window.showInformationMessage('没有编译结果信息');
+			return;
+		}
+		
+		const doc = await vscode.workspace.openTextDocument({
+			content: `Qt Linguist 编译结果\n${'='.repeat(40)}\n\n${results.join('\n')}`,
+			language: 'plaintext'
+		});
+		
+		await vscode.window.showTextDocument(doc);
+	}
+
+	// 注册命令：编译翻译文件（lrelease）
+	// let generateQmCommand = vscode.commands.registerCommand('qt-linguist.generateQm', async (uri: vscode.Uri) => {
+	// 	try {
+	// 		if (!uri.fsPath.endsWith('.ts')) {
+	// 			vscode.window.showErrorMessage('只能处理 .ts 翻译文件');
+	// 			return;
+	// 		}
+			
+	// 		const qtPaths = await getQtPaths();
+			
+	// 		if (!qtPaths.lrelease) {
+	// 			throw new Error('未找到 lrelease 工具，请检查 Qt 安装');
+	// 		}
+			
+	// 		// 显示进度条
+	// 		await vscode.window.withProgress({
+	// 			location: vscode.ProgressLocation.Notification,
+	// 			title: "编译翻译文件",
+	// 			cancellable: false
+	// 		}, async (progress) => {
+	// 			progress.report({ increment: 0, message: "正在编译..." });
+				
+	// 			const command = os.platform() === 'win32' 
+	// 				? `"${qtPaths.lrelease}" "${uri.fsPath}"` 
+	// 				: `'${qtPaths.lrelease}' '${uri.fsPath}'`;
+				
+	// 			const { stdout, stderr } = await execAsync(command);
+				
+	// 			progress.report({ increment: 100, message: "完成" });
+				
+	// 			if (stderr && !stderr.includes('Warning')) {
+	// 				throw new Error(stderr);
+	// 			}
+				
+	// 			const qmFile = uri.fsPath.replace('.ts', '.qm');
+	// 			vscode.window.showInformationMessage(`翻译文件编译完成: ${path.basename(qmFile)}`);
+	// 		});
+			
+	// 	} catch (error) {
+	// 		vscode.window.showErrorMessage(`编译翻译文件失败: ${error}`);
+	// 	}
+	// });
+
 	// 注册命令：更新翻译文件（lupdate）
-	let updateTranslationCommand = vscode.commands.registerCommand('qt-linguist.updateTranslation', async (uri?: vscode.Uri) => {
-		try {
+	// let updateTranslationCommand = vscode.commands.registerCommand('qt-linguist.updateTranslation', async (uri?: vscode.Uri) => {
+	// 	try {
+	// 		const qtPaths = await getQtPaths();
+			
+	// 		if (!qtPaths.lupdate) {
+	// 			throw new Error('未找到 lupdate 工具，请检查 Qt 安装');
+	// 		}
+			
+	// 		// 如果没有传入URI，尝试查找.pro文件
+	// 		if (!uri) {
+	// 			const proFiles = await findProFiles();
+	// 			if (proFiles.length === 0) {
+	// 				vscode.window.showErrorMessage('未找到 .pro 文件，请选择项目文件或.ts文件');
+	// 				return;
+	// 			} else if (proFiles.length === 1) {
+	// 				uri = proFiles[0];
+	// 			} else {
+	// 				// 多个.pro文件，让用户选择
+	// 				const items = proFiles.map(file => ({
+	// 					label: path.basename(file.fsPath),
+	// 					description: file.fsPath,
+	// 					uri: file
+	// 				}));
+					
+	// 				const selected = await vscode.window.showQuickPick(items, {
+	// 					placeHolder: '选择要更新的项目文件'
+	// 				});
+					
+	// 				if (!selected) return;
+	// 				uri = selected.uri;
+	// 			}
+	// 		}
+			
+	// 		// 显示进度条
+	// 		await vscode.window.withProgress({
+	// 			location: vscode.ProgressLocation.Notification,
+	// 			title: "更新翻译文件",
+	// 			cancellable: false
+	// 		}, async (progress) => {
+	// 			progress.report({ increment: 0, message: "正在扫描源码..." });
+				
+	// 			let command = '';
+	// 			if (uri!.fsPath.endsWith('.pro')) {
+	// 				// 从.pro文件更新
+	// 				command = os.platform() === 'win32' 
+	// 					? `"${qtPaths.lupdate}" "${uri!.fsPath}"` 
+	// 					: `'${qtPaths.lupdate}' '${uri!.fsPath}'`;
+	// 			} else if (uri!.fsPath.endsWith('.ts')) {
+	// 				// 直接更新.ts文件（需要指定源文件）
+	// 				const sourceDir = path.dirname(uri!.fsPath);
+	// 				command = os.platform() === 'win32' 
+	// 					? `"${qtPaths.lupdate}" "${sourceDir}" -ts "${uri!.fsPath}"` 
+	// 					: `'${qtPaths.lupdate}' '${sourceDir}' -ts '${uri!.fsPath}'`;
+	// 			} else {
+	// 				throw new Error('请选择 .pro 或 .ts 文件进行更新');
+	// 			}
+				
+	// 			const { stdout, stderr } = await execAsync(command);
+				
+	// 			progress.report({ increment: 100, message: "完成" });
+				
+	// 			if (stderr && !stderr.includes('Warning')) {
+	// 				throw new Error(stderr);
+	// 			}
+				
+	// 			vscode.window.showInformationMessage('翻译文件更新完成');
+				
+	// 			// 显示更新统计信息
+	// 			if (stdout) {
+	// 				const lines = stdout.split('\n').filter(line => line.trim());
+	// 				if (lines.length > 0) {
+	// 					vscode.window.showInformationMessage(`更新统计: ${lines[lines.length - 1]}`);
+	// 				}
+	// 			}
+	// 		});
+			
+	// 	} catch (error) {
+	// 		vscode.window.showErrorMessage(`更新翻译文件失败: ${error}`);
+	// 	}
+	// });
+	//注册命令：更新翻译文件
+	let updateTranslationCommand = vscode.commands.registerCommand('qt-linguist.updateTranslation', async (uri: vscode.Uri, uris?: vscode.Uri[]) => {
+	try {
+			const selectedFiles = await getSelectedTranslationFiles(uri, uris);
+			
+			if (selectedFiles.length === 0) {
+				vscode.window.showErrorMessage('请选择.ts项目文件或包含源代码的文件夹');
+				return;
+			}
+
 			const qtPaths = await getQtPaths();
 			
 			if (!qtPaths.lupdate) {
 				throw new Error('未找到 lupdate 工具，请检查 Qt 安装');
 			}
-			
-			// 如果没有传入URI，尝试查找.pro文件
-			if (!uri) {
-				const proFiles = await findProFiles();
-				if (proFiles.length === 0) {
-					vscode.window.showErrorMessage('未找到 .pro 文件，请选择项目文件或.ts文件');
-					return;
-				} else if (proFiles.length === 1) {
-					uri = proFiles[0];
-				} else {
-					// 多个.pro文件，让用户选择
-					const items = proFiles.map(file => ({
-						label: path.basename(file.fsPath),
-						description: file.fsPath,
-						uri: file
-					}));
-					
-					const selected = await vscode.window.showQuickPick(items, {
-						placeHolder: '选择要更新的项目文件'
-					});
-					
-					if (!selected) return;
-					uri = selected.uri;
-				}
-			}
-			
-			// 显示进度条
+
 			await vscode.window.withProgress({
 				location: vscode.ProgressLocation.Notification,
 				title: "更新翻译文件",
-				cancellable: false
-			}, async (progress) => {
-				progress.report({ increment: 0, message: "正在扫描源码..." });
-				
-				let command = '';
-				if (uri!.fsPath.endsWith('.pro')) {
-					// 从.pro文件更新
-					command = os.platform() === 'win32' 
-						? `"${qtPaths.lupdate}" "${uri!.fsPath}"` 
-						: `'${qtPaths.lupdate}' '${uri!.fsPath}'`;
-				} else if (uri!.fsPath.endsWith('.ts')) {
-					// 直接更新.ts文件（需要指定源文件）
-					const sourceDir = path.dirname(uri!.fsPath);
-					command = os.platform() === 'win32' 
-						? `"${qtPaths.lupdate}" "${sourceDir}" -ts "${uri!.fsPath}"` 
-						: `'${qtPaths.lupdate}' '${sourceDir}' -ts '${uri!.fsPath}'`;
-				} else {
-					throw new Error('请选择 .pro 或 .ts 文件进行更新');
-				}
-				
-				const { stdout, stderr } = await execAsync(command);
-				
-				progress.report({ increment: 100, message: "完成" });
-				
-				if (stderr && !stderr.includes('Warning')) {
-					throw new Error(stderr);
-				}
-				
-				vscode.window.showInformationMessage('翻译文件更新完成');
-				
-				// 显示更新统计信息
-				if (stdout) {
-					const lines = stdout.split('\n').filter(line => line.trim());
-					if (lines.length > 0) {
-						vscode.window.showInformationMessage(`更新统计: ${lines[lines.length - 1]}`);
+				cancellable: true
+			}, async (progress, token) => {
+				let updated = 0;
+				let failed = 0;
+				const total = selectedFiles.length;
+				const results: string[] = [];
+
+				for (let i = 0; i < selectedFiles.length; i++) {
+					if (token.isCancellationRequested) break;
+
+					const file = selectedFiles[i];
+					progress.report({
+						increment: (i / total) * 100,
+						message: `处理 ${path.basename(file.fsPath)} (${i + 1}/${total})`
+					});
+
+					try {
+						const isDir = (await fs.promises.stat(file.fsPath)).isDirectory();
+						const targetPath = isDir ? file.fsPath : path.dirname(file.fsPath);
+						
+						const command = os.platform() === 'win32'
+							? `"${qtPaths.lupdate}" "${targetPath}" -ts ${selectedFiles.map(f => `"${f.fsPath}"`).join(' ')}`
+							: `'${qtPaths.lupdate}' '${targetPath}' -ts ${selectedFiles.map(f => `'${f.fsPath}'`).join(' ')}`;
+
+						const { stdout, stderr } = await execAsync(command);
+
+						if (stderr && !stderr.includes('Warning')) {
+							throw new Error(stderr);
+						}
+
+						updated++;
+						results.push(`✓ 更新成功: ${path.basename(file.fsPath)}`);
+
+					} catch (error) {
+						failed++;
+						results.push(`✗ 更新失败: ${path.basename(file.fsPath)}: ${error}`);
+						console.error(`更新 ${file.fsPath} 失败:`, error);
 					}
 				}
+
+				progress.report({ increment: 100, message: "完成" });
+
+				const message = token.isCancellationRequested
+					? `更新已取消: 成功 ${updated} 个，失败 ${failed} 个`
+					: `更新完成: 成功 ${updated} 个，失败 ${failed} 个`;
+
+				if (failed > 0) {
+					vscode.window.showWarningMessage(message, '查看详情').then(selection => {
+						if (selection === '查看详情') {
+							showUpdateResults(results);
+						}
+					});
+				} else {
+					vscode.window.showInformationMessage(message);
+				}
 			});
-			
+
 		} catch (error) {
 			vscode.window.showErrorMessage(`更新翻译文件失败: ${error}`);
 		}
+
 	});
 
+	
 	// 注册命令：批量编译工作空间中的所有.ts文件
 	let compileAllCommand = vscode.commands.registerCommand('qt-linguist.compileAll', async () => {
 		try {
@@ -812,6 +1037,7 @@ export function activate(context: vscode.ExtensionContext) {
 
 		if (selected) {
 			const activeEditor = vscode.window.activeTextEditor;
+			
 			if (activeEditor && selected.command !== 'qt-linguist.compileAll' && 
 				selected.command !== 'qt-linguist.updateTranslation' && 
 				selected.command !== 'qt-linguist.updateAll') {
