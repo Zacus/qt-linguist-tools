@@ -2,7 +2,7 @@
  * @Author: zs
  * @Date: 2025-06-11 18:42:54
  * @LastEditors: zs
- * @LastEditTime: 2025-06-12 15:50:02
+ * @LastEditTime: 2025-06-12 16:21:11
  * @FilePath: /qt-linguist-tools/qt-linguist/src/extension.ts
  * @Description: 跨平台Qt Linguist VS Code扩展
  * 
@@ -26,6 +26,7 @@ interface QtPaths {
 export function activate(context: vscode.ExtensionContext) {
 
 	// 获取Qt工具路径
+// 获取Qt工具路径 - 修复版本
 	async function getQtPaths(): Promise<QtPaths> {
 		const config = vscode.workspace.getConfiguration('qt-linguist');
 		const customQtPath = config.get('qtPath', '');
@@ -43,7 +44,6 @@ export function activate(context: vscode.ExtensionContext) {
 				possibleBasePaths.push(
 					'/opt/homebrew/opt/qt',
 					'/usr/local/opt/qt',
-					'/Applications/Qt Creator.app/Contents/Resources/qt',
 					'/opt/Qt/*/bin'
 				);
 				break;
@@ -71,20 +71,14 @@ export function activate(context: vscode.ExtensionContext) {
 		const lreleaseName = platform === 'win32' ? 'lrelease.exe' : 'lrelease';
 		const lupdateName = platform === 'win32' ? 'lupdate.exe' : 'lupdate';
 		
-		// 在macOS上还要检查App包
-		const macLinguistPaths = platform === 'darwin' ? [
-			'/Applications/Qt Creator.app/Contents/MacOS/Qt Creator',
-			'/Applications/Qt Linguist.app/Contents/MacOS/Qt Linguist'
-		] : [];
-		
 		// 查找工具路径
 		let linguistPath = '';
 		let lreleasePath = '';
 		let lupdatePath = '';
 		
+		// 优先查找标准路径中的工具
 		for (const basePath of possibleBasePaths) {
 			try {
-				// 使用glob查找路径
 				const expandedPaths = await expandGlobPath(basePath);
 				
 				for (const expandedPath of expandedPaths) {
@@ -95,43 +89,48 @@ export function activate(context: vscode.ExtensionContext) {
 					for (const checkPath of [binPath, directPath]) {
 						if (!linguistPath) {
 							const linguistCandidate = path.join(checkPath, linguistName);
-							if (await fileExists(linguistCandidate)) {
+							if (await fileExists(linguistCandidate) && await isExecutable(linguistCandidate)) {
 								linguistPath = linguistCandidate;
 							}
 						}
 						
 						if (!lreleasePath) {
 							const lreleaseCandidate = path.join(checkPath, lreleaseName);
-							if (await fileExists(lreleaseCandidate)) {
+							if (await fileExists(lreleaseCandidate) && await isExecutable(lreleaseCandidate)) {
 								lreleasePath = lreleaseCandidate;
 							}
 						}
 						
 						if (!lupdatePath) {
 							const lupdateCandidate = path.join(checkPath, lupdateName);
-							if (await fileExists(lupdateCandidate)) {
+							if (await fileExists(lupdateCandidate) && await isExecutable(lupdateCandidate)) {
 								lupdatePath = lupdateCandidate;
 							}
 						}
 					}
 				}
 			} catch (e) {
-				// 忽略单个路径的查找错误
 				continue;
 			}
 		}
 		
-		// 在macOS上检查App包路径
+		// 在macOS上，只有在没找到标准linguist时才查找App包
 		if (platform === 'darwin' && !linguistPath) {
+			// 修正的macOS App路径
+			const macLinguistPaths = [
+				'/Applications/Qt Linguist.app/Contents/MacOS/linguist',  // 修正路径
+				'/Applications/Qt Creator.app/Contents/Resources/bin/linguist'  // Qt Creator内置的linguist
+			];
+			
 			for (const appPath of macLinguistPaths) {
-				if (await fileExists(appPath)) {
+				if (await fileExists(appPath) && await isExecutable(appPath)) {
 					linguistPath = appPath;
 					break;
 				}
 			}
 		}
 		
-		// 如果没有找到，尝试从系统PATH中查找
+		// 最后才从系统PATH中查找
 		if (!linguistPath) linguistPath = await findInPath(linguistName);
 		if (!lreleasePath) lreleasePath = await findInPath(lreleaseName);
 		if (!lupdatePath) lupdatePath = await findInPath(lupdateName);
@@ -143,6 +142,15 @@ export function activate(context: vscode.ExtensionContext) {
 		};
 	}
 	
+	// 新增：检查文件是否可执行
+	async function isExecutable(filePath: string): Promise<boolean> {
+		try {
+			await fs.promises.access(filePath, fs.constants.X_OK);
+			return true;
+		} catch {
+			return false;
+		}
+	}
 	// 展开glob路径
 	async function expandGlobPath(globPath: string): Promise<string[]> {
 		if (!globPath.includes('*')) {
@@ -205,15 +213,45 @@ export function activate(context: vscode.ExtensionContext) {
 				throw new Error('未找到 Qt Linguist，请检查 Qt 安装或配置路径');
 			}
 			
-			// 跨平台执行命令
-			const command = os.platform() === 'win32' 
-				? `"${qtPaths.linguist}" "${uri.fsPath}"` 
-				: `'${qtPaths.linguist}' '${uri.fsPath}'`;
+			// 检查是否已经有linguist进程在运行此文件
+			const isAlreadyOpen = await checkIfLinguistIsOpen(uri.fsPath);
+			if (isAlreadyOpen) {
+				vscode.window.showInformationMessage('该文件已在 Qt Linguist 中打开');
+				return;
+			}
 			
-			await execAsync(command);
+			// 更严格的命令构建和执行
+			let command: string;
+			const platform = os.platform();
+			
+			if (platform === 'darwin') {
+				// macOS: 使用 open 命令或直接执行
+				if (qtPaths.linguist.includes('.app/')) {
+					// App包格式，使用open命令
+					command = `open -n "${qtPaths.linguist.replace('/Contents/MacOS/linguist', '')}" --args "${uri.fsPath}"`;
+				} else {
+					// 命令行工具
+					command = `"${qtPaths.linguist}" "${uri.fsPath}" &`;
+				}
+			} else if (platform === 'win32') {
+				// Windows: 添加 /wait 可能有助于避免多实例
+				command = `start "" "${qtPaths.linguist}" "${uri.fsPath}"`;
+			} else {
+				// Linux: 后台运行
+				command = `"${qtPaths.linguist}" "${uri.fsPath}" &`;
+			}
+			
+			console.log('执行命令:', command); // 调试用
+			
+			await execAsync(command, { 
+				timeout: 10000,  // 10秒超时
+				windowsHide: true  // Windows上隐藏命令窗口
+			});
+			
 			vscode.window.showInformationMessage('Qt Linguist 已打开');
 			
 		} catch (error) {
+			console.error('打开Qt Linguist错误:', error); // 调试用
 			vscode.window.showErrorMessage(`无法打开 Qt Linguist: ${error}`);
 			
 			// 提示用户设置Qt路径
@@ -226,6 +264,27 @@ export function activate(context: vscode.ExtensionContext) {
 				});
 		}
 	});
+
+	// 新增：检查linguist是否已经打开了指定文件
+	async function checkIfLinguistIsOpen(filePath: string): Promise<boolean> {
+		try {
+			const platform = os.platform();
+			let command: string;
+			
+			if (platform === 'darwin') {
+				command = `ps aux | grep linguist | grep "${path.basename(filePath)}"`;
+			} else if (platform === 'win32') {
+				command = `tasklist /FI "IMAGENAME eq linguist.exe" /FO CSV | findstr linguist`;
+			} else {
+				command = `ps aux | grep linguist | grep "${path.basename(filePath)}"`;
+			}
+			
+			const { stdout } = await execAsync(command);
+			return stdout.trim().length > 0 && !stdout.includes('grep');
+		} catch {
+			return false; // 如果检查失败，假设没有打开
+		}
+	}
 
 	// 注册命令：编译翻译文件（lrelease）
 	let generateQmCommand = vscode.commands.registerCommand('qt-linguist.generateQm', async (uri: vscode.Uri) => {
