@@ -2,7 +2,7 @@
  * @Author: zs
  * @Date: 2025-06-12 21:47:24
  * @LastEditors: zs
- * @LastEditTime: 2025-06-13 00:10:53
+ * @LastEditTime: 2025-06-13 17:09:50
  * @FilePath: /qt-linguist-tools/qt-linguist/src/utils/FIleUtils.ts
  * @Description: 
  * 
@@ -171,4 +171,17 @@ export async function filterTsFiles(files: vscode.Uri[]): Promise<{
     }
     
     return { validFiles, invalidFiles };
+}
+
+export function getAbsoluteDir(filepath:string):string
+{
+            // 使用绝对路径确保一致性
+        const absoluteDir = path.resolve(path.dirname(filepath));
+        
+        
+        // Windows下统一大小写
+        const normalizedDir = process.platform === 'win32' 
+            ? absoluteDir.toLowerCase() 
+            : absoluteDir; 
+        return normalizedDir;
 }
