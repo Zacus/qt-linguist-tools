@@ -1,8 +1,8 @@
+
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as os from 'os';
 import * as fileUtils from './FileUtils'
-
 
 export interface QtPaths {
 	linguist: string;
@@ -10,6 +10,7 @@ export interface QtPaths {
 	lupdate: string;
 }
 
+// 获取Qt工具路径
 export async function getQtPaths(): Promise<QtPaths> {
     const config = vscode.workspace.getConfiguration('qt-linguist');
     const customQtPath = config.get('qtPath', '');

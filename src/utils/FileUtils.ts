@@ -2,9 +2,9 @@
  * @Author: zs
  * @Date: 2025-06-12 21:47:24
  * @LastEditors: zs
- * @LastEditTime: 2025-06-13 17:09:50
+ * @LastEditTime: 2025-06-13 17:51:33
  * @FilePath: /qt-linguist-tools/qt-linguist/src/utils/FIleUtils.ts
- * @Description: 
+ * @Description: 文件操作工具
  * 
  * Copyright (c) 2025 by zs, All Rights Reserved. 
  */
@@ -173,6 +173,7 @@ export async function filterTsFiles(files: vscode.Uri[]): Promise<{
     return { validFiles, invalidFiles };
 }
 
+//获取路径的绝对路径
 export function getAbsoluteDir(filepath:string):string
 {
             // 使用绝对路径确保一致性
