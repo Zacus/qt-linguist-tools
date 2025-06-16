@@ -32,16 +32,20 @@ class TranslationUpdater {
     /**
      * 安全地引用路径（处理空格和特殊字符）
      */
-    private quotePath(filePath: string): string {
-        const isWindows = os.platform() === 'win32';
-        
-        // Windows 使用双引号，Unix 系统使用单引号
-        if (isWindows) {
-            return `"${filePath.replace(/"/g, '\\"')}"`;
-        } else {
-            return `'${filePath.replace(/'/g, "\\'")}'`;
-        }
+private quotePath(filePath: string): string {
+    // 只对包含空格或特殊字符的路径加引号
+    const needsQuoting = /[\s"'&<>|]/.test(filePath);
+    if (!needsQuoting) {
+        return filePath;
     }
+    
+    const isWindows = os.platform() === 'win32';
+    if (isWindows) {
+        return `"${filePath.replace(/"/g, '\\"')}"`;
+    } else {
+        return `'${filePath.replace(/'/g, "\\'")}'`;
+    }
+}
 
     /**
      * 构建 lupdate 命令
@@ -102,60 +106,122 @@ class TranslationUpdater {
     /**
      * 执行 lupdate 命令（异步）
      */
-    private async executeLupdate(
-        command: string, 
-        taskId: string, 
-        token: vscode.CancellationToken
-    ): Promise<{ stdout: string, stderr: string }> {
-        return new Promise((resolve, reject) => {
-            const isWindows = os.platform() === 'win32';
-            const shell = isWindows ? 'cmd' : 'sh';
-            const shellFlag = isWindows ? '/c' : '-c';
-            
-            const process = spawn(shell, [shellFlag, command], {
-                stdio: ['pipe', 'pipe', 'pipe'],
-                timeout: 60000 // 60秒超时
-            });
-            
-            this.runningProcesses.set(taskId, process);
-            
-            let stdout = '';
-            let stderr = '';
-            
-            process.stdout?.on('data', (data) => {
-                stdout += data.toString();
-            });
-            
-            process.stderr?.on('data', (data) => {
-                stderr += data.toString();
-            });
-            
-            process.on('close', (code) => {
-                this.runningProcesses.delete(taskId);
-                
-                if (code === 0) {
-                    resolve({ stdout, stderr });
-                } else {
-                    reject(new Error(`lupdate 进程异常退出，退出码: ${code}\n${stderr}`));
-                }
-            });
-            
-            process.on('error', (error) => {
-                this.runningProcesses.delete(taskId);
-                reject(new Error(`执行 lupdate 失败: ${error.message}`));
-            });
-            
-            // 处理取消请求
-            const cancelListener = token.onCancellationRequested(() => {
-                if (process && !process.killed) {
-                    process.kill('SIGTERM');
-                    this.runningProcesses.delete(taskId);
-                }
-                cancelListener.dispose();
-            });
+/**
+ * 执行 lupdate 命令（异步）- 修复内存泄漏版本
+ */
+private async executeLupdate(
+    command: string, 
+    taskId: string, 
+    token: vscode.CancellationToken
+): Promise<{ stdout: string, stderr: string }> {
+    return new Promise((resolve, reject) => {
+        const isWindows = os.platform() === 'win32';
+        const shell = isWindows ? 'cmd' : 'sh';
+        const shellFlag = isWindows ? '/c' : '-c';
+        
+        const process = spawn(shell, [shellFlag, command], {
+            stdio: ['pipe', 'pipe', 'pipe'],
+            timeout: 60000 // 60秒超时
         });
-    }
-
+        
+        this.runningProcesses.set(taskId, process);
+        
+        let stdout = '';
+        let stderr = '';
+        let cancelListener: vscode.Disposable | undefined;
+        let isResolved = false;
+        
+        // 统一的清理函数
+        const cleanup = () => {
+            // 清理进程记录
+            this.runningProcesses.delete(taskId);
+            
+            // 清理取消监听器
+            if (cancelListener) {
+                cancelListener.dispose();
+                cancelListener = undefined;
+            }
+            
+            // 确保进程被终止
+            if (process && !process.killed) {
+                try {
+                    process.kill('SIGTERM');
+                } catch (error) {
+                    // 忽略kill失败的错误，进程可能已经结束
+                    console.warn(`Failed to kill process ${taskId}:`, error);
+                }
+            }
+        };
+        
+        // 统一的resolve函数，防止多次调用
+        const safeResolve = (result: { stdout: string, stderr: string }) => {
+            if (!isResolved) {
+                isResolved = true;
+                cleanup();
+                resolve(result);
+            }
+        };
+        
+        // 统一的reject函数，防止多次调用
+        const safeReject = (error: Error) => {
+            if (!isResolved) {
+                isResolved = true;
+                cleanup();
+                reject(error);
+            }
+        };
+        
+        // 处理stdout数据
+        process.stdout?.on('data', (data) => {
+            stdout += data.toString();
+        });
+        
+        // 处理stderr数据
+        process.stderr?.on('data', (data) => {
+            stderr += data.toString();
+        });
+        
+        // 处理进程正常结束
+        process.on('close', (code) => {
+            if (code === 0) {
+                safeResolve({ stdout, stderr });
+            } else {
+                safeReject(new Error(`lupdate 进程异常退出，退出码: ${code}\n${stderr}`));
+            }
+        });
+        
+        // 处理进程错误
+        process.on('error', (error) => {
+            safeReject(new Error(`执行 lupdate 失败: ${error.message}`));
+        });
+        
+        // 处理超时
+        process.on('timeout', () => {
+            safeReject(new Error(`lupdate 执行超时 (60秒)`));
+        });
+        
+        // 处理取消请求
+        cancelListener = token.onCancellationRequested(() => {
+            safeReject(new Error('操作已被用户取消'));
+        });
+        
+        // 处理进程意外退出
+        process.on('exit', (code, signal) => {
+            if (signal === 'SIGTERM' || signal === 'SIGKILL') {
+                // 这是我们主动终止的，通过其他事件处理
+                return;
+            }
+            
+            if (!isResolved) {
+                if (code === 0) {
+                    safeResolve({ stdout, stderr });
+                } else {
+                    safeReject(new Error(`lupdate 进程意外退出，退出码: ${code}, 信号: ${signal}\n${stderr}`));
+                }
+            }
+        });
+    });
+}
     /**
      * 准备更新任务
      */
@@ -298,6 +364,9 @@ class TranslationUpdater {
         }
     }
 
+
+    
+
     /**
      * 执行更新操作
      */
@@ -359,15 +428,94 @@ class TranslationUpdater {
     /**
      * 清理运行中的进程
      */
+    // cleanup(): void {
+    //     for (const [taskId, process] of this.runningProcesses) {
+    //         if (!process.killed) {
+    //             console.log(`清理进程: ${taskId}`);
+    //             process.kill('SIGTERM');
+    //         }
+    //     }
+    //     this.runningProcesses.clear();
+    // }
+
+    /**
+    * 清理运行中的进程 - 增强版本
+    */
     cleanup(): void {
+        console.log(`开始清理 ${this.runningProcesses.size} 个运行中的进程`);
+        
+        const cleanupPromises: Promise<void>[] = [];
+        
         for (const [taskId, process] of this.runningProcesses) {
             if (!process.killed) {
                 console.log(`清理进程: ${taskId}`);
-                process.kill('SIGTERM');
+                
+                // 创建清理Promise
+                const cleanupPromise = new Promise<void>((resolve) => {
+                    const timeout = setTimeout(() => {
+                        // 如果进程在3秒内没有正常结束，强制kill
+                        if (!process.killed) {
+                            console.warn(`强制终止进程: ${taskId}`);
+                            try {
+                                process.kill('SIGKILL');
+                            } catch (error) {
+                                console.error(`强制终止进程失败 ${taskId}:`, error);
+                            }
+                        }
+                        resolve();
+                    }, 3000);
+                    
+                    // 监听进程结束
+                    const onExit = () => {
+                        clearTimeout(timeout);
+                        resolve();
+                    };
+                    
+                    process.once('exit', onExit);
+                    process.once('close', onExit);
+                    
+                    // 尝试优雅地终止进程
+                    try {
+                        process.kill('SIGTERM');
+                    } catch (error) {
+                        console.error(`终止进程失败 ${taskId}:`, error);
+                        clearTimeout(timeout);
+                        resolve();
+                    }
+                });
+                
+                cleanupPromises.push(cleanupPromise);
             }
         }
+        
+        // 清空进程映射表
         this.runningProcesses.clear();
+        
+        // 等待所有进程清理完成（可选，如果需要同步清理）
+        if (cleanupPromises.length > 0) {
+            Promise.all(cleanupPromises).then(() => {
+                console.log('所有进程清理完成');
+            }).catch((error) => {
+                console.error('进程清理过程中发生错误:', error);
+            });
+        }
     }
+
+    /**
+     * 析构方法 - 确保资源清理
+     */
+    dispose(): void {
+        this.cleanup();
+    }
+
+    /**
+     * 获取当前运行的进程数量（用于调试）
+     */
+    getRunningProcessCount(): number {
+        return this.runningProcesses.size;
+    }
+    
+    
 }
 
 /**
