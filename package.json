@@ -2,7 +2,7 @@
   "name": "qt-linguist",
   "displayName": "Qt Linguist Tools",
   "description": "跨平台Qt Linguist集成工具，支持翻译文件的打开、更新和编译",
-  "version": "1.1.8",
+  "version": "1.1.9",
   "publisher": "zealoustarry",
   "repository": {
     "type": "git",
